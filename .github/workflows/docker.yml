@@ -38,7 +38,9 @@ jobs:
           LATEST=$(curl -fsSL "https://api.github.com/repos/${UPSTREAM}/releases/latest" \
             | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
           echo "locked=$VERSION latest=$LATEST"
-          [ "$LATEST" != "$VERSION" ] && echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$LATEST" != "$VERSION" ]; then
+            echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          fi
       - id: verify
         if: steps.decide.outputs.version != ''
         run: |
