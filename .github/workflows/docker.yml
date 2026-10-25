@@ -1,0 +1,96 @@
+name: docker
+on:
+  push:
+    branches: [master]
+    paths: [docker/version.lock, docker/Dockerfile, .github/workflows/docker.yml]
+  workflow_dispatch:
+  schedule:
+    - cron: "30 5 * * *"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: docker-fork
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  UPSTREAM: AsamK/signal-cli
+  # Release-signing key of the upstream author (GitHub identity-verified);
+  # release assets must verify against this key or the pipeline aborts.
+  SIGNING_KEY_ID: 2BA2CD21B5B09570
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.decide.outputs.version }}
+      sha256: ${{ steps.verify.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        run: |
+          source docker/version.lock
+          LATEST=$(curl -fsSL "https://api.github.com/repos/${UPSTREAM}/releases/latest" \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+          echo "locked=$VERSION latest=$LATEST"
+          [ "$LATEST" != "$VERSION" ] && echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+      - id: verify
+        if: steps.decide.outputs.version != ''
+        run: |
+          V=${{ steps.decide.outputs.version }}
+          curl -fsSL -o sig.tar.gz \
+            "https://github.com/${UPSTREAM}/releases/download/v${V}/signal-cli-${V}.tar.gz"
+          curl -fsSL -o sig.tar.gz.asc \
+            "https://github.com/${UPSTREAM}/releases/download/v${V}/signal-cli-${V}.tar.gz.asc"
+          curl -fsSL "https://api.github.com/users/AsamK/gpg_keys" | python3 -c '
+          import json,sys
+          for k in json.load(sys.stdin):
+              if k["key_id"].upper() == sys.argv[1].upper():
+                  sys.stdout.write(k["ascii_armor"]); break
+          ' "$SIGNING_KEY_ID" > signing.key
+          test -s signing.key || { echo "pinned signing key not found"; exit 1; }
+          gpg --import signing.key
+          gpg --status-output=gpg.status --verify sig.tar.gz.asc sig.tar.gz || { cat gpg.status; exit 1; }
+          grep -q "VALID sig" gpg.status || { echo "signature NOT valid against pinned key"; exit 1; }
+          echo "sha256=$(sha256sum sig.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Sync fork master to upstream release and bump lock
+        if: steps.decide.outputs.version != ''
+        run: |
+          V=${{ steps.decide.outputs.version }}
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch --tags upstream
+          git config user.name "signal-cli-fork-ci"
+          git config user.email "signal-cli-fork-ci@users.noreply.github.com"
+          git merge --no-edit "v${V}" || { echo "merge conflict with upstream; aborting bump"; exit 1; }
+          printf 'VERSION=%s\nSHA256=%s\n' "$V" "${{ steps.verify.outputs.sha256 }}" > docker/version.lock
+          git add docker/version.lock
+          git commit -m "docker: signal-cli $V (auto-sync, signature-verified)"
+          git push origin HEAD:master
+
+  build-push:
+    needs: sync-upstream
+    if: github.event_name != 'schedule' || needs.sync-upstream.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          source docker/version.lock
+          docker build -f docker/Dockerfile --build-arg VERSION="$VERSION" --build-arg SHA256="$SHA256" \
+            -t "$IMAGE:$VERSION" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"
+      - name: Smoke
+        run: |
+          source docker/version.lock
+          docker run --rm "$IMAGE:$VERSION" --version | grep -F "signal-cli $VERSION"
