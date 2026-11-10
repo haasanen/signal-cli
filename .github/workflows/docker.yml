@@ -51,10 +51,21 @@ jobs:
             "https://github.com/${UPSTREAM}/releases/download/v${V}/signal-cli-${V}.tar.gz.asc"
           curl -fsSL "https://api.github.com/users/AsamK/gpg_keys" | python3 -c '
           import json,sys
+          want=sys.argv[1].upper()
           for k in json.load(sys.stdin):
-              if k["key_id"].upper() == sys.argv[1].upper():
+              ids=[k.get("key_id") or ""]+[s.get("key_id") or "" for s in k.get("subkeys",[])]
+              if any(i.upper()==want for i in ids) and k.get("ascii_armor"):
                   sys.stdout.write(k["ascii_armor"]); break
           ' "$SIGNING_KEY_ID" > signing.key
+          if [ ! -s signing.key ]; then
+            # GitHub may list the identity key with ascii_armor null (observed
+            # 2026-11-10); fall back to public keyservers for the pinned key.
+            echo "GitHub gpg_keys has no armored key; falling back to keyservers"
+            for KS in hkps://keyserver.ubuntu.com hkps://keys.openpgp.org; do
+              gpg --batch --keyserver "$KS" --recv-keys "$SIGNING_KEY_ID" && break
+            done
+            gpg --batch --armor --export "$SIGNING_KEY_ID" > signing.key
+          fi
           test -s signing.key || { echo "pinned signing key not found"; exit 1; }
           gpg --import signing.key
           gpg --status-output=gpg.status --verify sig.tar.gz.asc sig.tar.gz || { cat gpg.status; exit 1; }
