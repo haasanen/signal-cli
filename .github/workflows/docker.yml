@@ -68,8 +68,13 @@ jobs:
           fi
           test -s signing.key || { echo "pinned signing key not found"; exit 1; }
           gpg --import signing.key
-          gpg --status-output=gpg.status --verify sig.tar.gz.asc sig.tar.gz || { cat gpg.status; exit 1; }
-          grep -q "VALID sig" gpg.status || { echo "signature NOT valid against pinned key"; exit 1; }
+          # --status-output is expert-only/rejected on current runner GnuPG
+          # (measured 2026-11-10: 'invalid option'); verify via stderr instead.
+          gpg --batch --verify sig.tar.gz.asc sig.tar.gz 2> gpg.err || { cat gpg.err; exit 1; }
+          grep -q "Good signature from" gpg.err || { echo "signature NOT valid against pinned key"; cat gpg.err; exit 1; }
+          SIGKEY=$(sed -n 's/.*using *[A-Za-z0-9]* *key \([0-9A-Fa-f]*\).*/\1/p' gpg.err | head -1 | tr 'a-f' 'A-F' | tail -c 17)
+          gpg --list-keys --with-colons | awk -F: '$1=="pub"||$1=="sub"{print toupper($5)}' | grep -qx "$SIGKEY" \
+            || { echo "signing key $SIGKEY not part of pinned key $SIGNING_KEY_ID"; exit 1; }
           echo "sha256=$(sha256sum sig.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Sync fork master to upstream release and bump lock
         if: steps.decide.outputs.version != ''
