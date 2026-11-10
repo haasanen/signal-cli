@@ -28,6 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.decide.outputs.version }}
       sha256: ${{ steps.verify.outputs.sha256 }}
+      commit: ${{ steps.sync.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,7 +77,8 @@ jobs:
           gpg --list-keys --with-colons | awk -F: '$1=="pub"||$1=="sub"{print toupper($5)}' | grep -qx "$SIGKEY" \
             || { echo "signing key $SIGKEY not part of pinned key $SIGNING_KEY_ID"; exit 1; }
           echo "sha256=$(sha256sum sig.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - name: Sync fork master to upstream release and bump lock
+      - id: sync
+        name: Sync fork master to upstream release and bump lock
         if: steps.decide.outputs.version != ''
         run: |
           V=${{ steps.decide.outputs.version }}
@@ -89,6 +91,10 @@ jobs:
           git add docker/version.lock
           git commit -m "docker: signal-cli $V (auto-sync, signature-verified)"
           git push origin HEAD:master
+          # build-push must see THIS commit; the trigger SHA still carries the
+          # previous lock (run 42864648729 built+pushed 0.14.9 because its
+          # checkout of 002dab12 predates this push).
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build-push:
     needs: sync-upstream
@@ -96,6 +102,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build the freshly synced master when this run bumped the lock;
+          # otherwise the trigger SHA already holds the current lock.
+          ref: ${{ needs.sync-upstream.outputs.commit || github.sha }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
