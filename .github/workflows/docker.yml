@@ -30,7 +30,7 @@ jobs:
       sha256: ${{ steps.verify.outputs.sha256 }}
       commit: ${{ steps.sync.outputs.commit }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           fetch-depth: 0
       - id: decide
@@ -101,12 +101,12 @@ jobs:
     if: github.event_name != 'schedule' || needs.sync-upstream.outputs.version != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           # Build the freshly synced master when this run bumped the lock;
           # otherwise the trigger SHA already holds the current lock.
           ref: ${{ needs.sync-upstream.outputs.commit || github.sha }}
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
